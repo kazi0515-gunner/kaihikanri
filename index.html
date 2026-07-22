@@ -102,6 +102,8 @@ const priceOfNth = (student, nth) =>
   : student.category === "child" ? 1300
   : nth >= 5 ? 2000 : 2500;
 const purchasePrice = (student, k, n, methodKey) => {
+  // 単発料金: 区分に関わらず ¥2,800/回(PayPayは手数料+¥100で計¥2,900/回)
+  if (METHODS[methodKey] && METHODS[methodKey].flat) return METHODS[methodKey].flat * n;
   // 小学生以下の一括払い: 4回ごとに¥5,000(端数は¥1,300/回)
   if (student.category === "child" && (methodKey === "lump" || methodKey === "lumpPP")) {
     return Math.floor(n / 4) * 5000 + (n % 4) * 1300;
@@ -129,8 +131,10 @@ const CAT_LABEL = { adult: "一般", child: "小学生以下", trial: "体験" }
 const METHODS = {
   lump: { label: "一括", full: "一括払い", count: 4, pay: "cash" },
   per: { label: "都度", full: "都度払い", count: 1, pay: "cash" },
+  single: { label: "単発", full: "都度払い(単発)", count: 1, pay: "cash", flat: 2800 },
   lumpPP: { label: "一括PayPay", full: "一括払い(PayPay)", count: 4, pay: "paypay" },
   perPP: { label: "都度PayPay", full: "都度払い(PayPay)", count: 1, pay: "paypay" },
+  singlePP: { label: "単発PayPay", full: "都度払い(単発・PayPay)", count: 1, pay: "paypay", flat: 2800 },
 };
 // 支払い記録から支払い方法キーを求める(旧データはcountとmethodから推定)
 const keyOfPayment = (p) =>
@@ -176,12 +180,20 @@ async function pushRemote(conf, payload) {
   if (!res.ok) throw new Error("push failed");
 }
 
-// ---- 月選択(◀ ▶ボタン式、画面幅に依存しない) ----
+// ---- 月選択(◀ ▶ + タップでカレンダー形式の月グリッド) ----
 function MonthPicker({ month, onChange, label }) {
+  const [open, setOpen] = useState(false);
+  const [viewYear, setViewYear] = useState(Number(month.split("-")[0]));
+  const curYear = Number(month.split("-")[0]);
+  const curMonth = Number(month.split("-")[1]);
   const shift = (d) => {
     const [y, m] = month.split("-").map(Number);
     const nd = new Date(y, m - 1 + d, 1);
     onChange(`${nd.getFullYear()}-${String(nd.getMonth() + 1).padStart(2, "0")}`);
+  };
+  const pick = (mm) => {
+    onChange(`${viewYear}-${String(mm).padStart(2, "0")}`);
+    setOpen(false);
   };
   return (
     <div>
@@ -190,11 +202,40 @@ function MonthPicker({ month, onChange, label }) {
         <button onClick={() => shift(-1)} aria-label="前の月"
           className="w-11 h-11 rounded-lg font-bold text-lg shrink-0"
           style={{ background: C.floor, border: `1px solid ${C.line}`, color: C.ink }}>{"\u25C0\uFE0E"}</button>
-        <span className="font-bold text-lg text-center flex-1 whitespace-nowrap">{monthLabel(month)}</span>
+        <button onClick={() => { setViewYear(curYear); setOpen(!open); }}
+          className="font-bold text-lg text-center flex-1 whitespace-nowrap py-2 rounded-lg"
+          style={{ background: open ? C.brassSoft : "transparent", color: C.ink }}>
+          {monthLabel(month)} <span className="text-xs font-normal" style={{ color: C.brass }}>{open ? "▲" : "▼"}</span>
+        </button>
         <button onClick={() => shift(1)} aria-label="次の月"
           className="w-11 h-11 rounded-lg font-bold text-lg shrink-0"
           style={{ background: C.floor, border: `1px solid ${C.line}`, color: C.ink }}>{"\u25B6\uFE0E"}</button>
       </div>
+      {open && (
+        <div className="mt-2 rounded-lg p-3" style={{ background: C.floor, border: `1px solid ${C.line}` }}>
+          <div className="flex items-center justify-between mb-2">
+            <button onClick={() => setViewYear((y) => y - 1)} className="w-9 h-9 rounded-lg font-bold"
+              style={{ background: C.card, border: `1px solid ${C.line}` }}>{"\u25C0\uFE0E"}</button>
+            <span className="font-bold">{viewYear}年</span>
+            <button onClick={() => setViewYear((y) => y + 1)} className="w-9 h-9 rounded-lg font-bold"
+              style={{ background: C.card, border: `1px solid ${C.line}` }}>{"\u25B6\uFE0E"}</button>
+          </div>
+          <div className="grid grid-cols-4 gap-1.5">
+            {Array.from({ length: 12 }, (_, i) => i + 1).map((mm) => {
+              const selected = viewYear === curYear && mm === curMonth;
+              return (
+                <button key={mm} onClick={() => pick(mm)}
+                  className="py-2.5 rounded-lg text-sm font-bold"
+                  style={selected
+                    ? { background: C.ink, color: C.floor }
+                    : { background: C.card, color: C.ink, border: `1px solid ${C.line}` }}>
+                  {mm}月
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -313,6 +354,12 @@ function TapFeeManager() {
   const [restoreOpen, setRestoreOpen] = useState(false);
   const [restoreText, setRestoreText] = useState("");
   const [restoreErr, setRestoreErr] = useState("");
+  // 名簿画面: 凡例・検索・入金修正 / 分析画面: 対象年
+  const [legendOpen, setLegendOpen] = useState(false);
+  const [rosterQuery, setRosterQuery] = useState("");
+  const [editPay, setEditPay] = useState(null);        // 修正対象の入金レコード
+  const [editPayAmount, setEditPayAmount] = useState("");
+  const [anaYear, setAnaYear] = useState(Number(todayStr().slice(0, 4)));
 
   // ---- 読み込み: ローカル → クラウド(設定済みなら新しい方を採用) ----
   useEffect(() => {
@@ -561,6 +608,37 @@ function TapFeeManager() {
     .filter((p) => p.month === month)
     .sort((a, b) => b.date.localeCompare(a.date));
 
+  // ---- 分析(対象年) ----
+  const analysis = useMemo(() => {
+    const y = String(anaYear);
+    const attYear = data.attendance.filter((a) => a.date.startsWith(y));
+    const payYear = data.payments.filter((p) => p.month.startsWith(y));
+    const months = [];
+    for (let mm = 1; mm <= 12; mm++) {
+      const key = `${y}-${String(mm).padStart(2, "0")}`;
+      months.push({
+        mm, key,
+        att: data.attendance.filter((a) => monthOf(a.date) === key).length,
+        amount: data.payments.filter((p) => p.month === key).reduce((s2, p) => s2 + p.amount, 0),
+      });
+    }
+    const students = data.students.map((s) => ({
+      s, count: attYear.filter((a) => a.studentId === s.id).length,
+    })).filter((r) => r.count > 0).sort((a, b) => b.count - a.count);
+    const classMap = {};
+    attYear.forEach((a) => { classMap[a.classId] = (classMap[a.classId] || 0) + 1; });
+    const classes = Object.entries(classMap).map(([id, count]) => ({ id, count }))
+      .sort((a, b) => b.count - a.count);
+    const wd = [0, 0, 0, 0, 0, 0, 0];
+    attYear.forEach((a) => { wd[new Date(a.date + "T00:00:00").getDay()]++; });
+    return {
+      months, students, classes, wd,
+      totalAtt: attYear.length,
+      totalAmount: payYear.reduce((s2, p) => s2 + p.amount, 0),
+      maxMonthAtt: Math.max(...months.map((m) => m.att), 1),
+    };
+  }, [data, anaYear]);
+
   if (!loaded) {
     return <div className="min-h-screen flex items-center justify-center" style={{ background: C.floor, color: C.sub }}>読み込み中…</div>;
   }
@@ -569,6 +647,7 @@ function TapFeeManager() {
     { key: "roster", label: "名簿管理" },
     { key: "attend", label: "出席管理" },
     { key: "monthly", label: "集計" },
+    { key: "analysis", label: "分析" },
   ];
 
   return (
@@ -632,6 +711,58 @@ function TapFeeManager() {
                   {yen(base + fee)} 受領
                 </button>
               </div>
+            </>
+          );
+        })()}
+      </Modal>
+
+      {/* ---- 入金の修正モーダル ---- */}
+      <Modal open={!!editPay} onClose={() => setEditPay(null)}>
+        {editPay && (() => {
+          const s = data.students.find((x) => x.id === editPay.studentId);
+          const mk = keyOfPayment(editPay);
+          const amt = Number(editPayAmount);
+          return (
+            <>
+              <div className="font-bold mb-0.5">{s ? s.name : ""} さんの入金を修正</div>
+              <div className="text-xs mb-3" style={{ color: C.sub }}>
+                {dateLabel(editPay.date)} ・ {METHODS[mk].full} ・ {editPay.count}回分
+              </div>
+              <label className="text-xs block mb-1" style={{ color: C.sub }}>受領金額(円)</label>
+              <input type="number" inputMode="numeric" min="1" value={editPayAmount}
+                onChange={(e) => setEditPayAmount(e.target.value)}
+                className="w-full rounded-lg px-3 py-2 text-lg font-bold mb-3"
+                style={{ border: `1px solid ${C.line}`, background: C.floor }} />
+              <div className="flex gap-2">
+                <button
+                  onClick={() => {
+                    const p = editPay;
+                    setEditPay(null);
+                    setConfirm({
+                      title: "入金の取り消し",
+                      message: `${dateLabel(p.date)} ${s ? s.name : ""} ${p.count}回分 ${yen(p.amount)}\nこの入金記録を取り消しますか?`,
+                      actionLabel: "取り消す",
+                      onConfirm: () => save({ ...data, payments: data.payments.filter((x) => x.id !== p.id) }),
+                    });
+                  }}
+                  className="flex-1 py-2.5 rounded-lg text-sm font-bold"
+                  style={{ color: C.red, border: `1px solid ${C.redSoft}`, background: C.card }}>
+                  取消(削除)
+                </button>
+                <button
+                  onClick={() => {
+                    save({ ...data, payments: data.payments.map((x) => (x.id === editPay.id ? { ...x, amount: amt } : x)) });
+                    setEditPay(null);
+                  }}
+                  disabled={!(amt > 0)}
+                  className="flex-1 py-2.5 rounded-lg text-sm font-bold"
+                  style={{ background: C.brass, color: "#fff", opacity: amt > 0 ? 1 : 0.4 }}>
+                  {amt > 0 ? `${yen(amt)} で保存` : "金額を入力"}
+                </button>
+              </div>
+              <button onClick={() => setEditPay(null)} className="w-full mt-2 py-2 text-sm" style={{ color: C.sub }}>
+                閉じる
+              </button>
             </>
           );
         })()}
@@ -725,10 +856,17 @@ function TapFeeManager() {
           <>
             <div className="rounded-xl p-4" style={{ background: C.card, border: `1px solid ${C.line}` }}>
               <MonthPicker month={month} onChange={setMonth} label="対象月" />
-              <div className="text-xs mt-3 leading-relaxed" style={{ color: C.sub }}>
-                支払いボタンをタップ = マーク(○)が増える ・ ○をタップ = 出席をつける ・ ●をタップ = 確認/取消<br />
-                <span style={{ color: C.green, fontWeight: 700 }}>○</span> 前月繰越 ・ <span style={{ color: C.red, fontWeight: 700 }}>●</span> 未払い出席 ・ <span style={{ color: C.red, fontWeight: 700 }}>＋</span> 未払いのまま出席をつける ・ 金色 = 5回目以降
-              </div>
+              <button onClick={() => setLegendOpen(!legendOpen)}
+                className="text-xs mt-3 font-bold" style={{ color: C.brass }}>
+                {legendOpen ? "▾ 凡例(マークの見方)を隠す" : "▸ 凡例(マークの見方)を表示"}
+              </button>
+              {legendOpen && (
+                <div className="text-xs mt-2 leading-relaxed" style={{ color: C.sub }}>
+                  支払いボタンをタップ = マーク(○)が増える ・ ○をタップ = 出席をつける ・ ●をタップ = 確認/取消<br />
+                  <span style={{ color: C.green, fontWeight: 700 }}>○</span> 前月繰越 ・ <span style={{ color: C.red, fontWeight: 700 }}>●</span> 未払い出席 ・ <span style={{ color: C.red, fontWeight: 700 }}>＋</span> 未払いのまま出席をつける ・ 金色 = 5回目以降<br />
+                  入金額の下の履歴チップをタップすると金額の修正・取消ができます
+                </div>
+              )}
             </div>
 
             {/* 生徒追加 */}
@@ -748,6 +886,23 @@ function TapFeeManager() {
               </button>
             )}
 
+            {/* 生徒名検索 */}
+            {data.students.length > 0 && (
+              <div className="flex gap-2">
+                <input value={rosterQuery} onChange={(e) => setRosterQuery(e.target.value)}
+                  placeholder="生徒名で検索"
+                  className="flex-1 min-w-0 rounded-xl px-4 py-2.5 text-sm"
+                  style={{ border: `1px solid ${C.line}`, background: C.card }} />
+                {rosterQuery && (
+                  <button onClick={() => setRosterQuery("")}
+                    className="shrink-0 px-3 rounded-xl text-sm"
+                    style={{ background: C.card, color: C.sub, border: `1px solid ${C.line}` }}>
+                    クリア
+                  </button>
+                )}
+              </div>
+            )}
+
             {data.students.length === 0 && !showAddForm && (
               <div className="rounded-xl p-6 text-center text-sm" style={{ background: C.card, border: `1px dashed ${C.line}`, color: C.sub }}>
                 まだ生徒がいません。上のボタンから登録してください。
@@ -755,7 +910,9 @@ function TapFeeManager() {
             )}
 
             {/* 生徒一覧 */}
-            {data.students.map((s) => {
+            {data.students
+              .filter((s) => !rosterQuery.trim() || s.name.toLowerCase().includes(rosterQuery.trim().toLowerCase()))
+              .map((s) => {
               const purchased = purchasedCount(s.id, month);
               const attRecords = attRecordsOf(s.id, month);
               const carry = carryIn(s.id, month);
@@ -794,8 +951,8 @@ function TapFeeManager() {
                       onView={(i) => setAttModal({ student: s, record: attRecords[i] })} />
                   </div>
 
-                  {/* 支払いボタン4種 */}
-                  <div className="mt-3 grid grid-cols-4 gap-1.5">
+                  {/* 支払いボタン6種 */}
+                  <div className="mt-3 grid grid-cols-3 gap-1.5">
                     {Object.entries(METHODS).map(([k, m]) => (
                       <button key={k} onClick={() => openPayModal(s, k)}
                         className="py-2 rounded-lg text-xs font-bold leading-tight"
@@ -806,6 +963,24 @@ function TapFeeManager() {
                       </button>
                     ))}
                   </div>
+
+                  {/* この月の入金履歴(タップで金額修正・取消) */}
+                  {(() => {
+                    const pays = data.payments.filter((p) => p.studentId === s.id && p.month === month);
+                    if (pays.length === 0) return null;
+                    return (
+                      <div className="mt-2 flex gap-1.5 flex-wrap">
+                        {pays.map((p) => (
+                          <button key={p.id}
+                            onClick={() => { setEditPay(p); setEditPayAmount(String(p.amount)); }}
+                            className="text-xs px-2 py-1 rounded-lg"
+                            style={{ color: p.method === "paypay" ? C.paypay : C.sub, border: `1px solid ${C.line}`, background: C.floor }}>
+                            {dateLabel(p.date)} {METHODS[keyOfPayment(p)].label} {p.count}回 {yen(p.amount)} ✎
+                          </button>
+                        ))}
+                      </div>
+                    );
+                  })()}
 
                   {/* 編集フォーム */}
                   {editingId === s.id && (
@@ -895,6 +1070,113 @@ function TapFeeManager() {
                 </div>
               ));
             })()}
+          </>
+        )}
+
+        {/* ============ 分析 ============ */}
+        {tab === "analysis" && (
+          <>
+            <div className="rounded-xl p-4" style={{ background: C.card, border: `1px solid ${C.line}` }}>
+              <div className="text-xs mb-1" style={{ color: C.sub }}>対象年</div>
+              <div className="flex items-center justify-between gap-2">
+                <button onClick={() => setAnaYear((y) => y - 1)} aria-label="前の年"
+                  className="w-11 h-11 rounded-lg font-bold text-lg shrink-0"
+                  style={{ background: C.floor, border: `1px solid ${C.line}` }}>{"\u25C0\uFE0E"}</button>
+                <span className="font-bold text-lg">{anaYear}年</span>
+                <button onClick={() => setAnaYear((y) => y + 1)} aria-label="次の年"
+                  className="w-11 h-11 rounded-lg font-bold text-lg shrink-0"
+                  style={{ background: C.floor, border: `1px solid ${C.line}` }}>{"\u25B6\uFE0E"}</button>
+              </div>
+              <div className="text-xs mt-2 text-center" style={{ color: C.sub }}>
+                年間出席のべ <span className="font-bold" style={{ color: C.ink }}>{analysis.totalAtt}回</span>
+                {" "}・ 年間入金合計 <span className="font-bold" style={{ color: C.green }}>{yen(analysis.totalAmount)}</span>
+              </div>
+            </div>
+
+            {/* 月別の推移 */}
+            <div className="rounded-xl overflow-hidden" style={{ background: C.card, border: `1px solid ${C.line}` }}>
+              <div className="px-4 py-2 text-xs font-bold" style={{ background: C.brassSoft, color: C.brass }}>
+                月別の推移(タップでその月の集計へ)
+              </div>
+              {analysis.months.map((m) => (
+                <button key={m.mm} onClick={() => { setMonth(m.key); setTab("monthly"); }}
+                  className="w-full px-4 py-2 flex items-center gap-2 text-left"
+                  style={{ borderTop: `1px solid ${C.line}` }}>
+                  <span className="text-xs w-8 shrink-0 text-right" style={{ color: C.sub }}>{m.mm}月</span>
+                  <span className="flex-1 h-2.5 rounded-full overflow-hidden" style={{ background: C.floor }}>
+                    <span className="block h-2.5 rounded-full"
+                      style={{ width: `${(m.att / analysis.maxMonthAtt) * 100}%`, background: C.brass, minWidth: m.att > 0 ? "5px" : 0 }} />
+                  </span>
+                  <span className="text-xs w-28 text-right shrink-0" style={{ color: C.sub }}>
+                    {m.att}回 / {yen(m.amount)}
+                  </span>
+                </button>
+              ))}
+            </div>
+
+            {/* 生徒別出席ランキング */}
+            <div className="rounded-xl overflow-hidden" style={{ background: C.card, border: `1px solid ${C.line}` }}>
+              <div className="px-4 py-2 text-xs font-bold" style={{ background: C.brassSoft, color: C.brass }}>
+                生徒別出席ランキング({anaYear}年)
+              </div>
+              {analysis.students.length === 0 ? (
+                <div className="p-5 text-center text-xs" style={{ color: C.sub }}>この年の出席記録はまだありません。</div>
+              ) : (
+                analysis.students.map((r, i) => (
+                  <div key={r.s.id} className="px-4 py-2 flex items-center gap-2" style={{ borderTop: `1px solid ${C.line}` }}>
+                    <span className="text-xs w-6 shrink-0 text-right font-bold"
+                      style={{ color: i < 3 ? C.brass : C.sub }}>{i + 1}</span>
+                    <span className="text-sm w-24 shrink-0 truncate font-bold">{r.s.name}</span>
+                    <span className="flex-1 h-2.5 rounded-full overflow-hidden" style={{ background: C.floor }}>
+                      <span className="block h-2.5 rounded-full"
+                        style={{ width: `${(r.count / analysis.students[0].count) * 100}%`, background: i < 3 ? C.brass : C.line, minWidth: "5px" }} />
+                    </span>
+                    <span className="text-xs w-10 text-right shrink-0" style={{ color: C.sub }}>{r.count}回</span>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* クラス別の参加状況 */}
+            <div className="rounded-xl overflow-hidden" style={{ background: C.card, border: `1px solid ${C.line}` }}>
+              <div className="px-4 py-2 text-xs font-bold" style={{ background: C.brassSoft, color: C.brass }}>
+                クラス別の参加状況({anaYear}年)
+              </div>
+              {analysis.classes.length === 0 ? (
+                <div className="p-5 text-center text-xs" style={{ color: C.sub }}>この年の出席記録はまだありません。</div>
+              ) : (
+                analysis.classes.map((c) => (
+                  <div key={c.id} className="px-4 py-2 flex items-center gap-2" style={{ borderTop: `1px solid ${C.line}` }}>
+                    <span className="text-xs w-24 shrink-0" style={{ color: C.ink, fontWeight: 700 }}>{classLabel(c.id)}</span>
+                    <span className="flex-1 h-2.5 rounded-full overflow-hidden" style={{ background: C.floor }}>
+                      <span className="block h-2.5 rounded-full"
+                        style={{ width: `${(c.count / analysis.classes[0].count) * 100}%`, background: C.brass, minWidth: "5px" }} />
+                    </span>
+                    <span className="text-xs w-10 text-right shrink-0" style={{ color: C.sub }}>{c.count}回</span>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* 曜日別の参加状況 */}
+            <div className="rounded-xl overflow-hidden" style={{ background: C.card, border: `1px solid ${C.line}` }}>
+              <div className="px-4 py-2 text-xs font-bold" style={{ background: C.brassSoft, color: C.brass }}>
+                曜日別の参加状況({anaYear}年)
+              </div>
+              {[1, 2, 3, 4, 5, 6, 0].map((d) => {
+                const maxWd = Math.max(...analysis.wd, 1);
+                return (
+                  <div key={d} className="px-4 py-2 flex items-center gap-2" style={{ borderTop: `1px solid ${C.line}` }}>
+                    <span className="text-xs w-8 shrink-0 text-right font-bold">{["日", "月", "火", "水", "木", "金", "土"][d]}曜</span>
+                    <span className="flex-1 h-2.5 rounded-full overflow-hidden" style={{ background: C.floor }}>
+                      <span className="block h-2.5 rounded-full"
+                        style={{ width: `${(analysis.wd[d] / maxWd) * 100}%`, background: C.brass, minWidth: analysis.wd[d] > 0 ? "5px" : 0 }} />
+                    </span>
+                    <span className="text-xs w-10 text-right shrink-0" style={{ color: C.sub }}>{analysis.wd[d]}回</span>
+                  </div>
+                );
+              })}
+            </div>
           </>
         )}
 

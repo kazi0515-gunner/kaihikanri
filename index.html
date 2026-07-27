@@ -360,6 +360,9 @@ function TapFeeManager() {
   const [editPay, setEditPay] = useState(null);        // 修正対象の入金レコード
   const [editPayAmount, setEditPayAmount] = useState("");
   const [anaYear, setAnaYear] = useState(Number(todayStr().slice(0, 4)));
+  const [undoStack, setUndoStack] = useState([]);      // 直前の状態(元に戻す用)
+  const [dragId, setDragId] = useState(null);          // 並べ替え中の生徒ID
+  const [payDate, setPayDate] = useState(todayStr());  // 入金日
 
   // ---- 読み込み: ローカル → クラウド(設定済みなら新しい方を採用) ----
   useEffect(() => {
@@ -403,6 +406,7 @@ function TapFeeManager() {
   }, []);
 
   const save = async (next) => {
+    setUndoStack((st) => [...st.slice(-9), data]); // 直近10件まで保持
     const stamped = { ...next, updatedAt: Date.now() };
     setData(stamped);
     try {
@@ -417,6 +421,20 @@ function TapFeeManager() {
         setSyncStatus("同期エラー: クラウドに送信できませんでした(データはこの端末に保存済み)");
       }
     }
+  };
+
+  // 直前の操作を元に戻す
+  const undo = async () => {
+    if (undoStack.length === 0) return;
+    const prev = undoStack[undoStack.length - 1];
+    setUndoStack((st) => st.slice(0, -1));
+    const stamped = { ...prev, updatedAt: Date.now() };
+    setData(stamped);
+    try { await window.storage.set(STORAGE_KEY, JSON.stringify(stamped)); } catch (e) {}
+    if (syncConf && syncConf.url && syncConf.code) {
+      try { await pushRemote(syncConf, stamped); } catch (e) {}
+    }
+    setSyncStatus("直前の操作を元に戻しました");
   };
 
   // ---- クラウド同期の設定・手動同期 ----
@@ -502,6 +520,7 @@ function TapFeeManager() {
   // ---- 支払い ----
   const openPayModal = (student, methodKey) => {
     setPayCount(METHODS[methodKey].count);
+    setPayDate(monthOf(todayStr()) === month ? todayStr() : `${month}-01`);
     setPayModal({ student, methodKey });
   };
   const recordPayment = () => {
@@ -510,7 +529,6 @@ function TapFeeManager() {
     const k = purchasedCount(student.id, month);
     const base = purchasePrice(student, k, payCount, methodKey);
     const fee = m.pay === "paypay" ? PAYPAY_FEE * payCount : 0;
-    const payDate = monthOf(todayStr()) === month ? todayStr() : `${month}-01`;
     save({
       ...data,
       payments: [...data.payments, {
@@ -557,6 +575,26 @@ function TapFeeManager() {
   const addStudent = (s) => {
     save({ ...data, students: [...data.students, { id: uid(), ...s }] });
     setShowAddForm(false);
+  };
+  // 並べ替え: fromId を toId の位置へ移動
+  const moveStudent = (fromId, toId) => {
+    if (!fromId || !toId || fromId === toId) return;
+    const list = [...data.students];
+    const from = list.findIndex((s) => s.id === fromId);
+    const to = list.findIndex((s) => s.id === toId);
+    if (from < 0 || to < 0) return;
+    const [moved] = list.splice(from, 1);
+    list.splice(to, 0, moved);
+    save({ ...data, students: list });
+  };
+  // 並べ替え: 1つ上/下へ
+  const shiftStudent = (id, dir) => {
+    const list = [...data.students];
+    const i = list.findIndex((s) => s.id === id);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= list.length) return;
+    [list[i], list[j]] = [list[j], list[i]];
+    save({ ...data, students: list });
   };
   const updateStudent = (id, patch) => {
     save({ ...data, students: data.students.map((s) => (s.id === id ? { ...s, ...patch } : s)) });
@@ -699,6 +737,10 @@ function TapFeeManager() {
                     className="w-10 h-10 rounded-lg font-bold text-xl" style={{ background: C.floor, border: `1px solid ${C.line}` }}>+</button>
                 </div>
               </div>
+              <label className="text-xs block mb-1" style={{ color: C.sub }}>入金日</label>
+              <input type="date" value={payDate} onChange={(e) => e.target.value && setPayDate(e.target.value)}
+                className="w-full rounded-lg px-3 py-2 text-base mb-3"
+                style={{ border: `1px solid ${C.line}`, background: C.floor }} />
               <div className="text-sm text-center mb-3 py-2 rounded-lg" style={{ background: C.floor }}>
                 {payCount}回分 {yen(base)}{fee > 0 && <> + 手数料 <span style={{ color: C.paypay }}>{yen(fee)}</span><span className="text-xs" style={{ color: C.sub }}>(¥100×{payCount})</span></>}
                 <span className="font-bold"> = {yen(base + fee)}</span>
@@ -864,7 +906,8 @@ function TapFeeManager() {
                 <div className="text-xs mt-2 leading-relaxed" style={{ color: C.sub }}>
                   支払いボタンをタップ = マーク(○)が増える ・ ○をタップ = 出席をつける ・ ●をタップ = 確認/取消<br />
                   <span style={{ color: C.green, fontWeight: 700 }}>○</span> 前月繰越 ・ <span style={{ color: C.red, fontWeight: 700 }}>●</span> 未払い出席 ・ <span style={{ color: C.red, fontWeight: 700 }}>＋</span> 未払いのまま出席をつける ・ 金色 = 5回目以降<br />
-                  入金額の下の履歴チップをタップすると金額の修正・取消ができます
+                  入金額の下の履歴チップをタップすると金額の修正・取消ができます<br />
+                  生徒カードは長押しドラッグ、または名前左の ▲▼ で並べ替えできます(検索中は不可)
                 </div>
               )}
             </div>
@@ -918,10 +961,30 @@ function TapFeeManager() {
               const carry = carryIn(s.id, month);
               const remaining = carry + purchased - attRecords.length;
               return (
-                <div key={s.id} className="rounded-xl p-4" style={{ background: C.card, border: `1px solid ${C.line}` }}>
+                <div key={s.id}
+                  draggable={!rosterQuery.trim()}
+                  onDragStart={() => setDragId(s.id)}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => { e.preventDefault(); moveStudent(dragId, s.id); setDragId(null); }}
+                  onDragEnd={() => setDragId(null)}
+                  className="rounded-xl p-4"
+                  style={{
+                    background: C.card,
+                    border: `1px solid ${dragId === s.id ? C.brass : C.line}`,
+                    opacity: dragId === s.id ? 0.5 : 1,
+                  }}>
                   <div className="flex items-center justify-between gap-2">
-                    <div className="min-w-0">
-                      <span className="font-bold">{s.name}</span>
+                    <div className="min-w-0 flex items-center gap-1.5">
+                      {!rosterQuery.trim() && (
+                        <span className="shrink-0 flex flex-col" style={{ lineHeight: 0.8 }}>
+                          <button onClick={() => shiftStudent(s.id, -1)} aria-label="上へ移動"
+                            className="text-xs px-1" style={{ color: C.sub }}>▲</button>
+                          <button onClick={() => shiftStudent(s.id, 1)} aria-label="下へ移動"
+                            className="text-xs px-1" style={{ color: C.sub }}>▼</button>
+                        </span>
+                      )}
+                      <span className="min-w-0">
+                        <span className="font-bold">{s.name}</span>
                       {s.category !== "adult" && (
                         <span className="ml-1.5 text-xs" style={{ color: s.category === "trial" ? C.red : C.sub }}>
                           {CAT_LABEL[s.category]}
@@ -932,6 +995,7 @@ function TapFeeManager() {
                           繰越{carry > 0 ? `+${carry}` : carry}
                         </span>
                       )}
+                      </span>
                     </div>
                     <div className="flex items-center gap-1.5 shrink-0">
                       <span className="text-xs font-bold" style={{ color: remaining < 0 ? C.red : remaining > 0 ? C.green : C.sub }}>
@@ -1076,6 +1140,23 @@ function TapFeeManager() {
         {/* ============ 分析 ============ */}
         {tab === "analysis" && (
           <>
+            {/* 現在の生徒数 */}
+            <div className="rounded-xl p-4" style={{ background: C.card, border: `1px solid ${C.line}` }}>
+              <div className="text-xs mb-1" style={{ color: C.sub }}>現在の登録生徒数</div>
+              <div className="flex items-end gap-3 flex-wrap">
+                <span className="font-bold text-3xl" style={{ fontFamily: "'Hiragino Mincho ProN','Yu Mincho',serif" }}>
+                  {data.students.length}<span className="text-lg ml-0.5">名</span>
+                </span>
+                <div className="flex gap-1 flex-wrap pb-1">
+                  {["adult", "child", "trial"].map((cat) => {
+                    const n = data.students.filter((s) => s.category === cat).length;
+                    if (n === 0) return null;
+                    return <Badge key={cat} tone={cat === "trial" ? "red" : "plain"}>{CAT_LABEL[cat]} {n}名</Badge>;
+                  })}
+                </div>
+              </div>
+            </div>
+
             <div className="rounded-xl p-4" style={{ background: C.card, border: `1px solid ${C.line}` }}>
               <div className="text-xs mb-1" style={{ color: C.sub }}>対象年</div>
               <div className="flex items-center justify-between gap-2">
@@ -1341,6 +1422,11 @@ function TapFeeManager() {
                       className="flex-1 py-2 rounded-lg text-sm font-bold"
                       style={{ background: C.floor, color: syncConf ? C.ink : C.sub, border: `1px solid ${C.line}`, opacity: syncConf ? 1 : 0.5 }}>
                       今すぐ同期
+                    </button>
+                    <button onClick={undo} disabled={undoStack.length === 0}
+                      className="flex-1 py-2 rounded-lg text-sm font-bold"
+                      style={{ background: C.floor, color: undoStack.length ? C.red : C.sub, border: `1px solid ${undoStack.length ? C.redSoft : C.line}`, opacity: undoStack.length ? 1 : 0.5 }}>
+                      一つ戻る{undoStack.length > 0 ? `(${undoStack.length})` : ""}
                     </button>
                   </div>
                 </div>

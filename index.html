@@ -375,7 +375,9 @@ function TapFeeManager() {
   const [dragId, setDragId] = useState(null);          // 並べ替え中の生徒ID
   const [payDate, setPayDate] = useState(todayStr());  // 入金日
   const [payOpenId, setPayOpenId] = useState(null);    // 支払い方法を開いている生徒ID
-  const [touchX, setTouchX] = useState(null);          // スワイプ判定用
+  const [touchX, setTouchX] = useState(null);          // スワイプ開始位置
+  const [swipeDx, setSwipeDx] = useState(0);           // 指の移動量(画面をずらす)
+  const [slideFrom, setSlideFrom] = useState(0);       // 切替後のスライドイン開始位置
 
   // ---- 読み込み: ローカル → クラウド(設定済みなら新しい方を採用) ----
   useEffect(() => {
@@ -908,16 +910,33 @@ function TapFeeManager() {
       <main className="max-w-2xl mx-auto px-4 space-y-4">
         {/* ============ 名簿管理 ============ */}
         {tab === "roster" && (
-          <div className="space-y-4"
-            onTouchStart={(e) => setTouchX(e.touches[0].clientX)}
+          <div
+            onTouchStart={(e) => { setTouchX(e.touches[0].clientX); setSlideFrom(0); }}
+            onTouchMove={(e) => {
+              if (touchX === null) return;
+              const dx = e.touches[0].clientX - touchX;
+              // 指の動きに追従(抵抗をかけて動かしすぎない)
+              setSwipeDx(Math.sign(dx) * Math.min(Math.abs(dx) * 0.6, 90));
+            }}
             onTouchEnd={(e) => {
               if (touchX === null) return;
               const dx = e.changedTouches[0].clientX - touchX;
               setTouchX(null);
+              setSwipeDx(0);
               if (Math.abs(dx) < 60) return; // 誤操作防止のしきい値
+              const dir = dx < 0 ? 1 : -1;
               const [y, m] = month.split("-").map(Number);
-              const nd = new Date(y, m - 1 + (dx < 0 ? 1 : -1), 1);
+              const nd = new Date(y, m - 1 + dir, 1);
               setMonth(`${nd.getFullYear()}-${String(nd.getMonth() + 1).padStart(2, "0")}`);
+              // 反対側から新しい月がスライドインしてくる
+              setSlideFrom(dir * 110);
+              setTimeout(() => setSlideFrom(0), 20);
+            }}
+            className="space-y-4"
+            style={{
+              transform: `translateX(${swipeDx || slideFrom}px)`,
+              opacity: slideFrom !== 0 ? 0.4 : 1,
+              transition: touchX !== null ? "none" : "transform 0.28s ease-out, opacity 0.28s ease-out",
             }}>
             <div className="rounded-xl p-4" style={{ background: C.card, border: `1px solid ${C.line}` }}>
               <MonthPicker month={month} onChange={setMonth} label="対象月(左右スワイプでも切替)" />

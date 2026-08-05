@@ -374,6 +374,8 @@ function TapFeeManager() {
   const [undoStack, setUndoStack] = useState([]);      // 直前の状態(元に戻す用)
   const [dragId, setDragId] = useState(null);          // 並べ替え中の生徒ID
   const [payDate, setPayDate] = useState(todayStr());  // 入金日
+  const [payOpenId, setPayOpenId] = useState(null);    // 支払い方法を開いている生徒ID
+  const [touchX, setTouchX] = useState(null);          // スワイプ判定用
 
   // ---- 読み込み: ローカル → クラウド(設定済みなら新しい方を採用) ----
   useEffect(() => {
@@ -906,9 +908,19 @@ function TapFeeManager() {
       <main className="max-w-2xl mx-auto px-4 space-y-4">
         {/* ============ 名簿管理 ============ */}
         {tab === "roster" && (
-          <>
+          <div className="space-y-4"
+            onTouchStart={(e) => setTouchX(e.touches[0].clientX)}
+            onTouchEnd={(e) => {
+              if (touchX === null) return;
+              const dx = e.changedTouches[0].clientX - touchX;
+              setTouchX(null);
+              if (Math.abs(dx) < 60) return; // 誤操作防止のしきい値
+              const [y, m] = month.split("-").map(Number);
+              const nd = new Date(y, m - 1 + (dx < 0 ? 1 : -1), 1);
+              setMonth(`${nd.getFullYear()}-${String(nd.getMonth() + 1).padStart(2, "0")}`);
+            }}>
             <div className="rounded-xl p-4" style={{ background: C.card, border: `1px solid ${C.line}` }}>
-              <MonthPicker month={month} onChange={setMonth} label="対象月" />
+              <MonthPicker month={month} onChange={setMonth} label="対象月(左右スワイプでも切替)" />
               <button onClick={() => setLegendOpen(!legendOpen)}
                 className="text-xs mt-3 font-bold" style={{ color: C.brass }}>
                 {legendOpen ? "▾ 凡例(マークの見方)を隠す" : "▸ 凡例(マークの見方)を表示"}
@@ -1026,36 +1038,48 @@ function TapFeeManager() {
                       onView={(i) => setAttModal({ student: s, record: attRecords[i] })} />
                   </div>
 
-                  {/* 支払いボタン6種 */}
-                  <div className="mt-3 grid grid-cols-3 gap-1.5">
-                    {Object.entries(METHODS).map(([k, m]) => (
-                      <button key={k} onClick={() => openPayModal(s, k)}
-                        className="py-2 rounded-lg text-xs font-bold leading-tight"
-                        style={m.pay === "paypay"
-                          ? { background: "#FDEAE6", color: C.paypay }
-                          : { background: C.brassSoft, color: C.brass }}>
-                        {m.label}
-                      </button>
-                    ))}
-                  </div>
+                  {/* 支払い(タップで開閉) */}
+                  <div className="mt-2">
+                    <button onClick={() => setPayOpenId(payOpenId === s.id ? null : s.id)}
+                      className="text-xs font-bold px-2.5 py-1 rounded-lg"
+                      style={{ color: C.brass, background: payOpenId === s.id ? C.brassSoft : "transparent", border: `1px solid ${C.brassSoft}` }}>
+                      支払い {payOpenId === s.id ? "▲" : "▼"}
+                    </button>
 
-                  {/* この月の入金履歴(タップで金額修正・取消) */}
-                  {(() => {
-                    const pays = data.payments.filter((p) => p.studentId === s.id && p.month === month);
-                    if (pays.length === 0) return null;
-                    return (
-                      <div className="mt-2 flex gap-1.5 flex-wrap">
-                        {pays.map((p) => (
-                          <button key={p.id}
-                            onClick={() => { setEditPay(p); setEditPayAmount(String(p.amount)); }}
-                            className="text-xs px-2 py-1 rounded-lg"
-                            style={{ color: p.method === "paypay" ? C.paypay : C.sub, border: `1px solid ${C.line}`, background: C.floor }}>
-                            {dateLabel(p.date)} {METHODS[keyOfPayment(p)].label} {p.count}回 {yen(p.amount)} ✎
-                          </button>
-                        ))}
-                      </div>
-                    );
-                  })()}
+                    {payOpenId === s.id && (
+                      <>
+                        <div className="mt-2 grid grid-cols-3 gap-1.5">
+                          {Object.entries(METHODS).map(([k, m]) => (
+                            <button key={k} onClick={() => openPayModal(s, k)}
+                              className="py-2 rounded-lg text-xs font-bold leading-tight"
+                              style={m.pay === "paypay"
+                                ? { background: "#FDEAE6", color: C.paypay }
+                                : { background: C.brassSoft, color: C.brass }}>
+                              {m.label}
+                            </button>
+                          ))}
+                        </div>
+
+                        {/* この月の入金履歴(タップで金額修正・取消) */}
+                        {(() => {
+                          const pays = data.payments.filter((p) => p.studentId === s.id && p.month === month);
+                          if (pays.length === 0) return null;
+                          return (
+                            <div className="mt-2 flex gap-1.5 flex-wrap">
+                              {pays.map((p) => (
+                                <button key={p.id}
+                                  onClick={() => { setEditPay(p); setEditPayAmount(String(p.amount)); }}
+                                  className="text-xs px-2 py-1 rounded-lg"
+                                  style={{ color: p.method === "paypay" ? C.paypay : C.sub, border: `1px solid ${C.line}`, background: C.floor }}>
+                                  {dateLabel(p.date)} {METHODS[keyOfPayment(p)].label} {p.count}回 {yen(p.amount)} ✎
+                                </button>
+                              ))}
+                            </div>
+                          );
+                        })()}
+                      </>
+                    )}
+                  </div>
 
                   {/* 編集フォーム */}
                   {editingId === s.id && (
@@ -1071,7 +1095,7 @@ function TapFeeManager() {
                 </div>
               );
             })}
-          </>
+          </div>
         )}
 
         {/* ============ 出席管理 ============ */}

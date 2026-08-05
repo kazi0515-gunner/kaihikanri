@@ -67,6 +67,8 @@ const SCHEDULE = {
   3: [
     { id: "wed1300", label: "13:00" },
     { id: "wed1415", label: "14:15" },
+    { id: "wed1745", label: "17:45" },
+    { id: "wed1900", label: "19:00" },
   ],
   4: [
     { id: "thu1745", label: "17:45" },
@@ -257,13 +259,22 @@ function Badge({ children, tone }) {
 
 // ---- マーク列(タップで出席登録/確認) ----
 // ○=支払い済み・未受講(タップで出席) 緑○=前月繰越 ●=出席済み(タップで確認・取消)
-// 赤●=未払いで出席 金色=5回目以降 破線+=未払いでの出席追加
+// 赤●=未払い出席(前月からの未払い繰越分も先頭に赤●で表示) 金色=5回目以降 破線+=未払いでの出席追加
 function MarkRow({ student, carry, purchased, attRecords, onAdd, onView }) {
   const carrySlots = Math.max(0, carry);
+  const debt = Math.max(0, -carry); // 前月までの未払い繰越回数
   const totalPaid = carrySlots + purchased;
   const attended = attRecords.length;
   const total = Math.max(totalPaid, attended);
   const marks = [];
+  // 前月までの未払い分: 先頭に赤●(タップ不可。前月の画面で取消・精算できます)
+  for (let d = 1; d <= debt; d++) {
+    marks.push(
+      <span key={"debt" + d} title="前月までの未払い分"
+        className="w-7 h-7 rounded-full shrink-0 inline-block"
+        style={{ background: C.red, opacity: 0.85 }} />
+    );
+  }
   for (let i = 1; i <= total; i++) {
     const filled = i <= attended;
     const paid = i <= totalPaid;
@@ -905,7 +916,7 @@ function TapFeeManager() {
               {legendOpen && (
                 <div className="text-xs mt-2 leading-relaxed" style={{ color: C.sub }}>
                   支払いボタンをタップ = マーク(○)が増える ・ ○をタップ = 出席をつける ・ ●をタップ = 確認/取消<br />
-                  <span style={{ color: C.green, fontWeight: 700 }}>○</span> 前月繰越 ・ <span style={{ color: C.red, fontWeight: 700 }}>●</span> 未払い出席 ・ <span style={{ color: C.red, fontWeight: 700 }}>＋</span> 未払いのまま出席をつける ・ 金色 = 5回目以降<br />
+                  <span style={{ color: C.green, fontWeight: 700 }}>○</span> 前月繰越 ・ <span style={{ color: C.red, fontWeight: 700 }}>●</span> 未払い出席(前月からの未払い分も先頭に赤●で表示) ・ <span style={{ color: C.red, fontWeight: 700 }}>＋</span> 未払いのまま出席をつける ・ 金色 = 5回目以降<br />
                   入金額の下の履歴チップをタップすると金額の修正・取消ができます<br />
                   生徒カードは長押しドラッグ、または名前左の ▲▼ で並べ替えできます(検索中は不可)
                 </div>
